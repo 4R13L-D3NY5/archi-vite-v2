@@ -2,7 +2,15 @@
 
 from uuid import UUID
 
-from app.domain.entities import AuditLog, Document, Folder, Tenant, User
+from app.domain.entities import (
+    AuditLog,
+    Document,
+    DocumentSource,
+    Folder,
+    IntegrationConnection,
+    Tenant,
+    User,
+)
 
 
 class InMemoryTenantRepository:
@@ -105,3 +113,25 @@ class InMemoryAuditRepository:
     def list_by_tenant(self, tenant_id: UUID, limit: int = 50) -> list[AuditLog]:
         entries = [e for e in self._items if e.tenant_id == tenant_id]
         return list(reversed(entries))[:limit]
+
+
+class InMemoryIntegrationRepository:
+    """In-memory store for IntegrationConnection entities."""
+
+    def __init__(self) -> None:
+        self._items: dict[UUID, IntegrationConnection] = {}
+
+    def save(self, connection: IntegrationConnection) -> IntegrationConnection:
+        self._items[connection.id] = connection
+        return connection
+
+    def get_by_provider(
+        self, tenant_id: UUID, provider: DocumentSource
+    ) -> IntegrationConnection | None:
+        for conn in self._items.values():
+            if conn.tenant_id == tenant_id and conn.provider == provider:
+                return conn
+        return None
+
+    def list_by_tenant(self, tenant_id: UUID) -> list[IntegrationConnection]:
+        return [c for c in self._items.values() if c.tenant_id == tenant_id]

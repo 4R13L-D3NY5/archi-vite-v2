@@ -9,6 +9,7 @@ from app.domain.entities import (
     Document,
     DocumentSource,
     Folder,
+    IntegrationConnection,
     Role,
     Tenant,
     User,
@@ -129,13 +130,30 @@ class StoragePort(Protocol):
         """Remove an object from storage."""
 
 
+class IntegrationRepositoryPort(Protocol):
+    """Persistence contract for external DMS connections."""
+
+    def save(self, connection: IntegrationConnection) -> IntegrationConnection:
+        """Persist or update an integration connection."""
+
+    def get_by_provider(
+        self, tenant_id: UUID, provider: DocumentSource
+    ) -> IntegrationConnection | None:
+        """Fetch an active integration for a tenant and provider."""
+
+    def list_by_tenant(self, tenant_id: UUID) -> list[IntegrationConnection]:
+        """List all integrations configured for a tenant."""
+
+
 class DmsProviderPort(Protocol):
-    """Connector contract for external DMS providers (Google Drive, SharePoint, etc.)."""
+    """Connector contract for external DMS providers (Google Drive, WebDAV, etc.)."""
 
     def list_changes(
-        self, tenant_id: UUID, cursor: str | None = None
+        self, connection: IntegrationConnection, cursor: str | None = None
     ) -> tuple[list[ExternalDocumentItem], str | None]:
         """Fetch incremental changes from an external DMS and return the next cursor."""
 
-    def download_content(self, tenant_id: UUID, external_id: str) -> bytes:
+    def download_content(
+        self, connection: IntegrationConnection, external_id: str
+    ) -> bytes:
         """Download binary content for an external document."""

@@ -75,6 +75,28 @@ class AuditLog:
 
 
 @dataclass
+class IntegrationConnection:
+    """Tenant-scoped configuration and sync cursor for an external DMS provider."""
+
+    tenant_id: UUID
+    provider: DocumentSource
+    access_token: str
+    base_url: str | None = None
+    refresh_token: str | None = None
+    sync_cursor: str | None = None
+    is_active: bool = True
+    id: UUID = field(default_factory=uuid4)
+    created_at: datetime = field(default_factory=_utc_now)
+    updated_at: datetime = field(default_factory=_utc_now)
+
+    def __post_init__(self) -> None:
+        if self.provider == DocumentSource.LOCAL:
+            raise ValidationError("Integration provider cannot be 'local'.")
+        if not self.access_token.strip():
+            raise ValidationError("Integration access_token cannot be empty.")
+
+
+@dataclass
 class Folder:
     """Hierarchical container for documents inside a tenant."""
 

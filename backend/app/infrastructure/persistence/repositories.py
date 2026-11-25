@@ -10,6 +10,7 @@ from app.domain.entities import (
     Document,
     DocumentSource,
     Folder,
+    IntegrationConnection,
     Role,
     Tenant,
     User,
@@ -18,6 +19,7 @@ from app.infrastructure.persistence.models import (
     AuditLogModel,
     DocumentModel,
     FolderModel,
+    IntegrationConnectionModel,
     TenantModel,
     UserModel,
 )
@@ -237,5 +239,73 @@ class SqlAlchemyAuditRepository:
             .where(AuditLogModel.tenant_id == tenant_id)
             .order_by(AuditLogModel.created_at.desc())
             .limit(limit)
+        ).all()
+        return [self._to_domain(row) for row in rows]
+
+
+class SqlAlchemyIntegrationRepository:
+    """PostgreSQL adapter for IntegrationRepositoryPort."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    @staticmethod
+    def _to_domain(row: IntegrationConnectionModel) -> IntegrationConnection:
+        return IntegrationConnection(
+            id=row.id,
+            tenant_id=row.tenant_id,
+            provider=DocumentSource(row.provider),
+            access_token=row.access_token,
+            base_url=row.base_url,
+            refresh_token=row.refresh_token,
+            sync_cursor=row.sync_cursor,
+            is_active=row.is_active,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+    def save(self, connection: IntegrationConnection) -> IntegrationConnection:
+        row = self._session.get(IntegrationConnectionModel, connection.id)
+        if row is None:
+            row = IntegrationConnectionModel(
+                id=connection.id,
+                tenant_id=connection.tenant_id,
+                provider=connection.provider.value,
+                access_token=connection.access_token,
+                base_url=connection.base_url,
+                refresh_token=connection.refresh_token,
+                sync_cursor=connection.sync_cursor,
+                is_active=connection.is_active,
+                created_at=connection.created_at,
+                updated_at=connection.updated_at,
+            )
+            self._session.add(row)
+        else:
+            row.access_token = connection.access_token
+            row.base_url = connection.base_url
+            row.refresh_token = connection.refresh_token
+            row.sync_cursor = connection.sync_cursor
+            row.is_active = connection.is_active
+            row.updated_at = connection.updated_at
+        self._session.commit()
+        self._session.refresh(row)
+        return self._to_domain(row)
+
+    def get_by_provider(
+        self, tenant_id: UUID, provider: DocumentSource
+    ) -> IntegrationConnection | None:
+        row = self._session.scalar(
+            select(IntegrationConnectionModel).where(
+                IntegrationConnectionModel.tenant_id == tenant_id,
+                IntegrationConnectionModel.provider == provider.value,
+            )
+        )
+        return self._to_domain(row) if row else None
+
+    def list_by_tenant(self, tenant_id: UUID) -> list[IntegrationConnection]:
+        rows = self._session.scalars(
+            select(IntegrationConnectionModel).where(
+                IntegrationConnectionModel.tenant_id == tenant_id
+            )
         ).all()
         return [self._to_domain(row) for row in rows]

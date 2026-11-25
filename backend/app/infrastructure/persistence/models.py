@@ -123,3 +123,31 @@ class AuditLogModel(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now, nullable=False
     )
+
+
+class IntegrationConnectionModel(Base):
+    """External DMS/cloud provider credentials and sync cursor per tenant."""
+
+    __tablename__ = "integration_connections"
+    __table_args__ = (
+        Index("ix_integrations_tenant_provider", "tenant_id", "provider", unique=True),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    access_token: Mapped[str] = mapped_column(String(2048), nullable=False)
+    base_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    refresh_token: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    sync_cursor: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )

@@ -10,8 +10,10 @@ from sqlalchemy.orm import Session
 
 from app.application.ports import (
     AuditRepositoryPort,
+    DmsProviderPort,
     DocumentRepositoryPort,
     FolderRepositoryPort,
+    IntegrationRepositoryPort,
     StoragePort,
     TenantRepositoryPort,
     TokenPayload,
@@ -29,7 +31,19 @@ from app.application.use_cases.documents import (
     UploadDocumentCommand,
     UploadDocumentUseCase,
 )
-from app.domain.entities import AuditLog, Document, DocumentSource, Role
+from app.application.use_cases.integrations import (
+    ConnectDmsCommand,
+    ConnectDmsUseCase,
+    SyncDmsCommand,
+    SyncDmsDocumentsUseCase,
+)
+from app.domain.entities import (
+    AuditLog,
+    Document,
+    DocumentSource,
+    IntegrationConnection,
+    Role,
+)
 from app.domain.exceptions import (
     DuplicateEntityError,
     EntityNotFoundError,
@@ -37,11 +51,14 @@ from app.domain.exceptions import (
     ValidationError,
 )
 from app.infrastructure.config import get_settings
+from app.infrastructure.dms.google_drive_adapter import GoogleDriveAdapter
+from app.infrastructure.dms.webdav_dms_adapter import WebDavDmsAdapter
 from app.infrastructure.persistence.database import get_db
 from app.infrastructure.persistence.repositories import (
     SqlAlchemyAuditRepository,
     SqlAlchemyDocumentRepository,
     SqlAlchemyFolderRepository,
+    SqlAlchemyIntegrationRepository,
     SqlAlchemyTenantRepository,
     SqlAlchemyUserRepository,
 )
@@ -80,6 +97,17 @@ def get_document_repo(db: Session = Depends(get_db)) -> DocumentRepositoryPort:
 
 def get_audit_repo(db: Session = Depends(get_db)) -> AuditRepositoryPort:
     return SqlAlchemyAuditRepository(db)
+
+
+def get_integration_repo(db: Session = Depends(get_db)) -> IntegrationRepositoryPort:
+    return SqlAlchemyIntegrationRepository(db)
+
+
+def get_dms_providers() -> dict[DocumentSource, DmsProviderPort]:
+    return {
+        DocumentSource.GOOGLE_DRIVE: GoogleDriveAdapter(),
+        DocumentSource.EXTERNAL_DMS: WebDavDmsAdapter(),
+    }
 
 
 def get_storage() -> StoragePort:
@@ -291,3 +319,114 @@ def list_audit_logs(
     except UnauthorizedActionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     return [AuditLogResponse.from_domain(entry) for entry in entries]
+
+
+class ConnectIntegrationRequest(BaseModel):
+    access_token: str
+    base_url: str | None = None
+    refresh_token: str | None = None
+
+
+class IntegrationResponse(BaseModel):
+    id: UUID
+    provider: DocumentSource
+    base_url: str | None
+    sync_cursor: str | None
+    is_active: bool
+    updated_at: datetime
+
+    @classmethod
+    def from_domain(cls, conn: IntegrationConnection) -> "IntegrationResponse":
+        return cls(
+            id=conn.id,
+            provider=conn.provider,
+            base_url=conn.base_url,
+            sync_cursor=conn.sync_cursor,
+            is_active=conn.is_active,
+            updated_at=conn.updated_at,
+        )
+
+
+class SyncIntegrationResponse(BaseModel):
+    synced_count: int
+    next_cursor: str | None
+
+
+@app.post("/api/v1/integrations/{provider}", response_model=IntegrationResponse)
+def connect_integration(
+    provider: DocumentSource,
+    payload: ConnectIntegrationRequest,
+    actor: TokenPayload = Depends(get_current_actor),
+    integration_repo: IntegrationRepositoryPort = Depends(get_integration_repo),
+    audit_repo: AuditRepositoryPort = Depends(get_audit_repo),
+) -> IntegrationResponse:
+    """Connect or update an external DMS provider (ADMIN only)."""
+    use_case = ConnectDmsUseCase(integration_repo=integration_repo, audit_repo=audit_repo)
+    try:
+        conn = use_case.execute(
+            ConnectDmsCommand(
+                tenant_id=actor.tenant_id,
+                actor_user_id=actor.user_id,
+                actor_role=actor.role,
+                provider=provider,
+                access_token=payload.access_token,
+                base_url=payload.base_url,
+                refresh_token=payload.refresh_token,
+            )
+        )
+    except UnauthorizedActionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return IntegrationResponse.from_domain(conn)
+
+
+@app.get("/api/v1/integrations", response_model=list[IntegrationResponse])
+def list_integrations(
+    actor: TokenPayload = Depends(get_current_actor),
+    integration_repo: IntegrationRepositoryPort = Depends(get_integration_repo),
+) -> list[IntegrationResponse]:
+    """List external DMS integrations configured for the tenant."""
+    return [
+        IntegrationResponse.from_domain(c)
+        for c in integration_repo.list_by_tenant(actor.tenant_id)
+    ]
+
+
+@app.post("/api/v1/integrations/{provider}/sync", response_model=SyncIntegrationResponse)
+def sync_integration(
+    provider: DocumentSource,
+    actor: TokenPayload = Depends(get_current_actor),
+    integration_repo: IntegrationRepositoryPort = Depends(get_integration_repo),
+    document_repo: DocumentRepositoryPort = Depends(get_document_repo),
+    audit_repo: AuditRepositoryPort = Depends(get_audit_repo),
+    storage: StoragePort = Depends(get_storage),
+    providers: dict[DocumentSource, DmsProviderPort] = Depends(get_dms_providers),
+) -> SyncIntegrationResponse:
+    """Trigger incremental document sync from an external DMS provider."""
+    use_case = SyncDmsDocumentsUseCase(
+        integration_repo=integration_repo,
+        document_repo=document_repo,
+        storage=storage,
+        providers=providers,
+        audit_repo=audit_repo,
+    )
+    try:
+        result = use_case.execute(
+            SyncDmsCommand(
+                tenant_id=actor.tenant_id,
+                actor_user_id=actor.user_id,
+                actor_role=actor.role,
+                provider=provider,
+            )
+        )
+    except UnauthorizedActionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return SyncIntegrationResponse(
+        synced_count=result.synced_count,
+        next_cursor=result.next_cursor,
+    )
