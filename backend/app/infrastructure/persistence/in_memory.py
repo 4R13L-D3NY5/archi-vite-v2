@@ -1,23 +1,64 @@
-"""In-memory repository adapters for unit tests and early local prototyping."""
+"""In-memory repository adapters for unit tests."""
 
 from uuid import UUID
 
-from app.domain.entities import Document, Folder
+from app.domain.entities import AuditLog, Document, Folder, Tenant, User
+
+
+class InMemoryTenantRepository:
+    """In-memory store for Tenant entities."""
+
+    def __init__(self) -> None:
+        self._by_id: dict[UUID, Tenant] = {}
+
+    def save(self, tenant: Tenant) -> Tenant:
+        self._by_id[tenant.id] = tenant
+        return tenant
+
+    def get_by_slug(self, slug: str) -> Tenant | None:
+        for tenant in self._by_id.values():
+            if tenant.slug == slug:
+                return tenant
+        return None
+
+    def get_by_id(self, tenant_id: UUID) -> Tenant | None:
+        return self._by_id.get(tenant_id)
+
+
+class InMemoryUserRepository:
+    """In-memory store for User entities."""
+
+    def __init__(self) -> None:
+        self._by_id: dict[UUID, User] = {}
+
+    def save(self, user: User) -> User:
+        self._by_id[user.id] = user
+        return user
+
+    def get_by_email(self, tenant_id: UUID, email: str) -> User | None:
+        for user in self._by_id.values():
+            if user.tenant_id == tenant_id and user.email == email:
+                return user
+        return None
+
+    def get_by_id(self, tenant_id: UUID, user_id: UUID) -> User | None:
+        user = self._by_id.get(user_id)
+        if user is None or user.tenant_id != tenant_id:
+            return None
+        return user
 
 
 class InMemoryDocumentRepository:
-    """Thread-unsafe in-memory store for Document entities."""
+    """In-memory store for Document entities."""
 
     def __init__(self) -> None:
         self._items: dict[UUID, Document] = {}
 
     def save(self, document: Document) -> Document:
-        """Store or overwrite a document."""
         self._items[document.id] = document
         return document
 
     def get_by_id(self, tenant_id: UUID, document_id: UUID) -> Document | None:
-        """Return document only if it belongs to tenant_id."""
         doc = self._items.get(document_id)
         if doc is None or doc.tenant_id != tenant_id:
             return None
@@ -26,7 +67,6 @@ class InMemoryDocumentRepository:
     def list_by_tenant(
         self, tenant_id: UUID, folder_id: UUID | None = None
     ) -> list[Document]:
-        """Return all documents for tenant_id, optionally filtered by folder_id."""
         return [
             doc
             for doc in self._items.values()
@@ -42,13 +82,26 @@ class InMemoryFolderRepository:
         self._items: dict[UUID, Folder] = {}
 
     def save(self, folder: Folder) -> Folder:
-        """Store or overwrite a folder."""
         self._items[folder.id] = folder
         return folder
 
     def get_by_id(self, tenant_id: UUID, folder_id: UUID) -> Folder | None:
-        """Return folder only if it belongs to tenant_id."""
         folder = self._items.get(folder_id)
         if folder is None or folder.tenant_id != tenant_id:
             return None
         return folder
+
+
+class InMemoryAuditRepository:
+    """In-memory store for AuditLog entities."""
+
+    def __init__(self) -> None:
+        self._items: list[AuditLog] = []
+
+    def record(self, entry: AuditLog) -> AuditLog:
+        self._items.append(entry)
+        return entry
+
+    def list_by_tenant(self, tenant_id: UUID, limit: int = 50) -> list[AuditLog]:
+        entries = [e for e in self._items if e.tenant_id == tenant_id]
+        return list(reversed(entries))[:limit]

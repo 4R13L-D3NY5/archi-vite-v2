@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     )
     redis_url: str = "redis://localhost:6379/0"
     storage_base_path: str = "./media"
+    jwt_secret_key: str = "dev-insecure-change-me-in-production-min-32-bytes"
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 60
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

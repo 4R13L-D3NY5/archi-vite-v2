@@ -50,6 +50,7 @@ class User:
 
     tenant_id: UUID
     email: str
+    password_hash: str = ""
     role: Role = Role.VIEWER
     id: UUID = field(default_factory=uuid4)
     is_active: bool = True
@@ -58,6 +59,19 @@ class User:
     def __post_init__(self) -> None:
         if "@" not in self.email:
             raise ValidationError("User email must be valid.")
+
+
+@dataclass(frozen=True)
+class AuditLog:
+    """Immutable audit trail entry for tenant-scoped actions."""
+
+    tenant_id: UUID
+    actor_user_id: UUID
+    action: str
+    resource_type: str
+    resource_id: UUID
+    id: UUID = field(default_factory=uuid4)
+    created_at: datetime = field(default_factory=_utc_now)
 
 
 @dataclass
