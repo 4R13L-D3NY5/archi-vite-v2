@@ -7,10 +7,12 @@ from uuid import UUID
 from app.domain.entities import (
     AuditLog,
     Document,
+    DocumentChunk,
     DocumentSource,
     Folder,
     IntegrationConnection,
     Role,
+    SearchResult,
     Tenant,
     User,
 )
@@ -157,3 +159,38 @@ class DmsProviderPort(Protocol):
         self, connection: IntegrationConnection, external_id: str
     ) -> bytes:
         """Download binary content for an external document."""
+
+
+class TextExtractorPort(Protocol):
+    """Extract plain text from binary documents (PDF, text, JSON, etc.)."""
+
+    def extract_text(self, content: bytes, mime_type: str) -> str:
+        """Return extracted text content."""
+
+
+class EmbeddingPort(Protocol):
+    """Generate fixed-dimension vector embeddings for text inputs."""
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Return one embedding vector per input text."""
+
+
+class VectorStorePort(Protocol):
+    """Tenant-scoped vector storage and similarity search contract."""
+
+    def upsert_chunks(
+        self, tenant_id: UUID, document_id: UUID, chunks: list[DocumentChunk]
+    ) -> None:
+        """Replace indexed chunks for a document within a tenant."""
+
+    def search(
+        self, tenant_id: UUID, query_embedding: list[float], limit: int = 5
+    ) -> list[SearchResult]:
+        """Return top-k matching chunks strictly scoped to tenant_id."""
+
+
+class JobQueuePort(Protocol):
+    """Background job queue contract for asynchronous AI processing."""
+
+    def enqueue_document_indexing(self, tenant_id: UUID, document_id: UUID) -> str:
+        """Enqueue a document indexing job and return a job identifier."""

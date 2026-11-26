@@ -1,13 +1,16 @@
 """In-memory repository adapters for unit tests."""
 
+import math
 from uuid import UUID
 
 from app.domain.entities import (
     AuditLog,
     Document,
+    DocumentChunk,
     DocumentSource,
     Folder,
     IntegrationConnection,
+    SearchResult,
     Tenant,
     User,
 )
@@ -135,3 +138,47 @@ class InMemoryIntegrationRepository:
 
     def list_by_tenant(self, tenant_id: UUID) -> list[IntegrationConnection]:
         return [c for c in self._items.values() if c.tenant_id == tenant_id]
+
+
+class InMemoryVectorStore:
+    """In-memory VectorStorePort using exact cosine similarity for unit tests."""
+
+    def __init__(self, document_repo: InMemoryDocumentRepository) -> None:
+        self._document_repo = document_repo
+        self._chunks: dict[UUID, list[DocumentChunk]] = {}
+
+    def upsert_chunks(
+        self, tenant_id: UUID, document_id: UUID, chunks: list[DocumentChunk]
+    ) -> None:
+        self._chunks[document_id] = [
+            c for c in chunks if c.tenant_id == tenant_id
+        ]
+
+    @staticmethod
+    def _cosine(a: list[float], b: list[float]) -> float:
+        dot = sum(x * y for x, y in zip(a, b, strict=True))
+        na = math.sqrt(sum(x * x for x in a))
+        nb = math.sqrt(sum(y * y for y in b))
+        return dot / (na * nb) if na > 0 and nb > 0 else 0.0
+
+    def search(
+        self, tenant_id: UUID, query_embedding: list[float], limit: int = 5
+    ) -> list[SearchResult]:
+        scored: list[SearchResult] = []
+        for doc_chunks in self._chunks.values():
+            for chunk in doc_chunks:
+                if chunk.tenant_id != tenant_id:
+                    continue
+                doc = self._document_repo.get_by_id(tenant_id, chunk.document_id)
+                title = doc.title if doc else "unknown"
+                scored.append(
+                    SearchResult(
+                        document_id=chunk.document_id,
+                        document_title=title,
+                        chunk_index=chunk.chunk_index,
+                        content=chunk.content,
+                        score=self._cosine(query_embedding, chunk.embedding),
+                    )
+                )
+        scored.sort(key=lambda r: r.score, reverse=True)
+        return scored[:limit]

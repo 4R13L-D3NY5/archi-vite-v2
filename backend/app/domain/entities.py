@@ -96,6 +96,30 @@ class IntegrationConnection:
             raise ValidationError("Integration access_token cannot be empty.")
 
 
+@dataclass(frozen=True)
+class DocumentChunk:
+    """Indexed text chunk and vector embedding belonging to a tenant document."""
+
+    tenant_id: UUID
+    document_id: UUID
+    chunk_index: int
+    content: str
+    embedding: list[float]
+    id: UUID = field(default_factory=uuid4)
+    created_at: datetime = field(default_factory=_utc_now)
+
+
+@dataclass(frozen=True)
+class SearchResult:
+    """Semantic search match returned by RAG retrieval."""
+
+    document_id: UUID
+    document_title: str
+    chunk_index: int
+    content: str
+    score: float
+
+
 @dataclass
 class Folder:
     """Hierarchical container for documents inside a tenant."""

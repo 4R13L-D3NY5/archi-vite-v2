@@ -4,6 +4,7 @@ from datetime import datetime
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -12,12 +13,20 @@ from app.application.ports import (
     AuditRepositoryPort,
     DmsProviderPort,
     DocumentRepositoryPort,
+    EmbeddingPort,
     FolderRepositoryPort,
     IntegrationRepositoryPort,
+    JobQueuePort,
     StoragePort,
     TenantRepositoryPort,
+    TextExtractorPort,
     TokenPayload,
     UserRepositoryPort,
+    VectorStorePort,
+)
+from app.application.use_cases.ai import (
+    IndexDocumentUseCase,
+    SemanticSearchUseCase,
 )
 from app.application.use_cases.auth import (
     LoginCommand,
@@ -50,6 +59,9 @@ from app.domain.exceptions import (
     UnauthorizedActionError,
     ValidationError,
 )
+from app.infrastructure.ai.embedder import DeterministicHashEmbedder
+from app.infrastructure.ai.queue import RedisJobQueue
+from app.infrastructure.ai.text_extractor import DefaultTextExtractor
 from app.infrastructure.config import get_settings
 from app.infrastructure.dms.google_drive_adapter import GoogleDriveAdapter
 from app.infrastructure.dms.webdav_dms_adapter import WebDavDmsAdapter
@@ -61,6 +73,7 @@ from app.infrastructure.persistence.repositories import (
     SqlAlchemyIntegrationRepository,
     SqlAlchemyTenantRepository,
     SqlAlchemyUserRepository,
+    SqlAlchemyVectorStore,
 )
 from app.infrastructure.security.auth_adapters import (
     BcryptPasswordHasher,
@@ -69,7 +82,14 @@ from app.infrastructure.security.auth_adapters import (
 from app.infrastructure.storage.local_storage import LocalStorageAdapter
 
 settings = get_settings()
-app = FastAPI(title=settings.app_name, version="0.2.0")
+app = FastAPI(title=settings.app_name, version="0.4.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 _bearer_scheme = HTTPBearer()
 _hasher = BcryptPasswordHasher()
 _token_service = JwtTokenService(
@@ -108,6 +128,22 @@ def get_dms_providers() -> dict[DocumentSource, DmsProviderPort]:
         DocumentSource.GOOGLE_DRIVE: GoogleDriveAdapter(),
         DocumentSource.EXTERNAL_DMS: WebDavDmsAdapter(),
     }
+
+
+def get_vector_store(db: Session = Depends(get_db)) -> VectorStorePort:
+    return SqlAlchemyVectorStore(db)
+
+
+def get_embedder() -> EmbeddingPort:
+    return DeterministicHashEmbedder()
+
+
+def get_text_extractor() -> TextExtractorPort:
+    return DefaultTextExtractor()
+
+
+def get_job_queue() -> JobQueuePort:
+    return RedisJobQueue(settings.redis_url)
 
 
 def get_storage() -> StoragePort:
@@ -261,6 +297,7 @@ async def upload_document(
     folder_repo: FolderRepositoryPort = Depends(get_folder_repo),
     audit_repo: AuditRepositoryPort = Depends(get_audit_repo),
     storage: StoragePort = Depends(get_storage),
+    job_queue: JobQueuePort = Depends(get_job_queue),
 ) -> DocumentResponse:
     """Upload a document into the authenticated actor's tenant workspace."""
     content = await file.read()
@@ -289,6 +326,7 @@ async def upload_document(
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    job_queue.enqueue_document_indexing(actor.tenant_id, document.id)
     return DocumentResponse.from_domain(document)
 
 
@@ -429,4 +467,92 @@ def sync_integration(
     return SyncIntegrationResponse(
         synced_count=result.synced_count,
         next_cursor=result.next_cursor,
+    )
+
+
+class IndexDocumentResponse(BaseModel):
+    document_id: UUID
+    chunks_indexed: int
+
+
+class SearchRequest(BaseModel):
+    query: str
+    limit: int = 5
+
+
+class SearchMatchResponse(BaseModel):
+    document_id: UUID
+    document_title: str
+    chunk_index: int
+    content: str
+    score: float
+
+
+class SearchResponse(BaseModel):
+    query: str
+    summary: str
+    results: list[SearchMatchResponse]
+
+
+@app.post("/api/v1/documents/{document_id}/index", response_model=IndexDocumentResponse)
+def index_document_now(
+    document_id: UUID,
+    actor: TokenPayload = Depends(get_current_actor),
+    document_repo: DocumentRepositoryPort = Depends(get_document_repo),
+    storage: StoragePort = Depends(get_storage),
+    extractor: TextExtractorPort = Depends(get_text_extractor),
+    embedder: EmbeddingPort = Depends(get_embedder),
+    vector_store: VectorStorePort = Depends(get_vector_store),
+    audit_repo: AuditRepositoryPort = Depends(get_audit_repo),
+) -> IndexDocumentResponse:
+    """Synchronously index a document for immediate semantic search availability."""
+    if actor.role not in {Role.ADMIN, Role.EDITOR}:
+        raise HTTPException(status_code=403, detail="Insufficient permissions.")
+    use_case = IndexDocumentUseCase(
+        document_repo=document_repo,
+        storage=storage,
+        extractor=extractor,
+        embedder=embedder,
+        vector_store=vector_store,
+        audit_repo=audit_repo,
+    )
+    try:
+        count = use_case.execute(
+            tenant_id=actor.tenant_id,
+            document_id=document_id,
+            actor_user_id=actor.user_id,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return IndexDocumentResponse(document_id=document_id, chunks_indexed=count)
+
+
+@app.post("/api/v1/search", response_model=SearchResponse)
+def semantic_search(
+    payload: SearchRequest,
+    actor: TokenPayload = Depends(get_current_actor),
+    embedder: EmbeddingPort = Depends(get_embedder),
+    vector_store: VectorStorePort = Depends(get_vector_store),
+) -> SearchResponse:
+    """Semantic search / RAG retrieval scoped strictly to the actor's tenant."""
+    use_case = SemanticSearchUseCase(embedder=embedder, vector_store=vector_store)
+    try:
+        res = use_case.execute(
+            tenant_id=actor.tenant_id, query=payload.query, limit=payload.limit
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return SearchResponse(
+        query=res.query,
+        summary=res.summary,
+        results=[
+            SearchMatchResponse(
+                document_id=r.document_id,
+                document_title=r.document_title,
+                chunk_index=r.chunk_index,
+                content=r.content,
+                score=r.score,
+            )
+            for r in res.results
+        ],
     )

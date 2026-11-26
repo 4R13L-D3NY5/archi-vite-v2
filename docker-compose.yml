@@ -53,6 +53,42 @@ services:
       redis:
         condition: service_healthy
 
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: archivite_v2_worker
+    restart: unless-stopped
+    command: python -m app.infrastructure.ai.worker
+    volumes:
+      - ./backend:/app
+      - media_data:/app/media
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-archivite}:${POSTGRES_PASSWORD:-archivite_dev_secret}@db:5432/${POSTGRES_DB:-archivite_v2}
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_BASE_PATH: /app/media
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: archivite_v2_frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-5174}:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      VITE_API_URL: http://localhost:${BACKEND_PORT:-8001}
+    depends_on:
+      - backend
+
 volumes:
   postgres_data:
   redis_data:

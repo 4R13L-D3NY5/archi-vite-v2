@@ -5,11 +5,13 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.domain.entities import Role, User
+from app.infrastructure.ai.queue import InMemoryJobQueue
 from app.infrastructure.api.main import (
     app,
     get_audit_repo,
     get_document_repo,
     get_folder_repo,
+    get_job_queue,
     get_storage,
     get_tenant_repo,
     get_user_repo,
@@ -41,6 +43,7 @@ def _build_test_client(
     app.dependency_overrides[get_document_repo] = lambda: doc_repo
     app.dependency_overrides[get_audit_repo] = lambda: audit_repo
     app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_job_queue] = lambda: InMemoryJobQueue()
 
     return TestClient(app), tenant_repo, user_repo
 
